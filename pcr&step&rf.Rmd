@@ -1,0 +1,215 @@
+
+
+```{r,message=FALSE, warning=FALSE}
+library(tidyverse)
+library(stringr)
+library(glmnet)
+library(pls)
+library(randomForest)
+library(caret)
+library(leaps)
+library(dplyr)
+```
+
+#helper functions
+```{r}
+OSR2 <- function(predictions, train, test) {
+  SSE <- sum((test - predictions)^2)
+  SST <- sum((test - mean(train))^2)
+  r2 <- 1 - SSE/SST
+  return(r2)
+}
+
+printMetricsHelp <- function(train, test, pred.train, pred.test) {
+  
+  trainRsq <- OSR2(pred.train, train, train)
+  testRsq <- OSR2(pred.test, train, test)
+  trainMAE <- mean(abs(train - pred.train))
+  testMAE <- mean(abs(test - pred.test))
+  trainRMSE <- sqrt(mean((train - pred.train)^2))
+  testRMSE <- sqrt(mean((test - pred.test)^2))
+  
+  print(str_c("Training set R^2: ", trainRsq))
+  print(str_c("Training set MAE: ", trainMAE))
+  print(str_c("Training set RMSE: ", trainRMSE))
+  print(str_c("Test set R^2: ", testRsq))
+  print(str_c("Test set MAE: ", testMAE))
+  print(str_c("Test set RMSE: ", testRMSE))
+}
+
+printMetrics <- function(train, test, pred.train, pred.test) {
+
+  print("Metrics for IncidntNum:")
+  printMetricsHelp(train, test, pred.train, pred.test)
+}
+```
+
+
+```{r}
+test <- read.csv("test_v3.csv")
+train <- read.csv("train_v3.csv")
+full <- rbind(test,train)
+test$pd <- NULL
+full$pd <- NULL
+train$pd <- NULL
+test$X <- NULL
+full$X <- NULL
+train$X <- NULL
+test$Unnamed..0 <- NULL
+full$Unnamed..0 <- NULL
+train$Unnamed..0 <- NULL
+test$date <- NULL
+full$date <- NULL
+train$date <- NULL
+```
+
+```{r}
+full %>% ggplot(aes(x = IncidntNum)) + geom_density()
+full <- full %>% mutate(LogIncidntNum = log(IncidntNum))
+full <- full %>% select(LogIncidntNum, everything())
+full %>% ggplot(aes(x = LogIncidntNum)) + geom_density()
+full$LogIncidntNum <- NULL
+```
+
+```{r}
+full %>% ggplot(aes(x = slot, y = IncidntNum)) + geom_boxplot()
+full %>% ggplot(aes(x = PdDistrict, y = IncidntNum)) + geom_boxplot()
+full %>% ggplot(aes(x = DayOfWeek, y = IncidntNum)) + geom_boxplot()
+full %>% ggplot(aes(x = AvgTemp, y = IncidntNum)) + geom_smooth()
+full %>% ggplot(aes(x = Humidity, y = IncidntNum)) + geom_smooth()
+full %>% ggplot(aes(x = Visibility, y = IncidntNum)) + geom_smooth()
+full %>% ggplot(aes(x = WindSpeed, y = IncidntNum)) + geom_smooth()
+full %>% ggplot(aes(x = Haz_Score, y = IncidntNum)) + geom_point()
+full %>% ggplot(aes(x = Under18_Per, y = IncidntNum)) + geom_smooth()
+```
+```{r}
+poly_degree <- 10
+big_formula <- IncidntNum ~ poly(AvgTemp, poly_degree) + poly(Humidity, poly_degree) + poly(Visibility, poly_degree) + poly(WindSpeed, poly_degree) + .
+
+trainY <- train$IncidntNum
+trainX <- model.matrix(big_formula, data = train)
+
+testY <- test$IncidntNum
+testX <- model.matrix(big_formula, data = test)
+
+train.df <- as.data.frame(cbind(trainY, trainX))
+test.df <- as.data.frame(cbind(testY, testX))
+
+##simple data set
+
+formula <- IncidntNum ~ AvgTemp + Humidity + Visibility + WindSpeed+slot+DayOfWeek+PdDistrict
+
+trainYS <- train$IncidntNum
+trainXS <- model.matrix(formula, data = train)
+
+testYS <- test$IncidntNum
+testXS <- model.matrix(formula, data = test)
+
+```
+
+#Principal Components Regression
+remove columns that are constant
+```{r}
+trainX.colSDs <- apply(trainX, 2, sd)
+trainX.constantCols <- which(abs(trainX.colSDs) < .1)
+trainX.pcr <- trainX[, -trainX.constantCols]
+
+set.seed(2312)
+train.pcr <- train(trainX.pcr, trainY, 
+                   method = "pcr", 
+                   preProcess = c("center", "scale", "pca"),
+                   trControl = trainControl(method = "cv", number = 20, selectionFunction = "oneSE"),
+                   tuneGrid = data.frame(ncomp = seq_len(20)))
+train.pcr
+train.pcr$results %>% ggplot(aes(x = ncomp, y = RMSE)) + geom_point(size = 3) + 
+  ylab("CV RMSE") + theme_bw() + theme(axis.title=element_text(size=18), axis.text=element_text(size=18))
+train.df.pcr <- as.data.frame(cbind(trainY, trainX.pcr))
+mod.pcr <- pcr(trainY ~ ., data = train.df.pcr, scale = TRUE, ncomp = 19)
+testX.pcr <- testX[, -trainX.constantCols]
+test.df.pcr <- as.data.frame(cbind(testY, testX.pcr))
+
+pred.pcr.train <- predict(mod.pcr, newdata = train.df.pcr, ncomp = 19)
+pred.pcr.test <- predict(mod.pcr, newdata = test.df.pcr, ncomp = 19)
+printMetrics(trainY, testY, pred.pcr.train, pred.pcr.test)
+
+```
+
+#Forward Stepwise
+```{r}
+mod.initial <- lm(trainY ~ 1, data = train.df)
+forward.big <- formula(lm(trainY ~ ., data = train.df))
+mod.forward <- step(mod.initial, steps = 25, direction = "forward", scope = forward.big)
+summary(mod.forward)
+
+# predictions
+test.df <- as.data.frame(cbind(testY, testX))
+
+pred.forward.train <- predict(mod.forward, newdata = train.df)
+pred.forward.test <- predict(mod.forward, newdata = test.df)
+
+printMetrics(trainY, testY, pred.forward.train, pred.forward.test)
+```
+
+## Random Forests
+
+```{r,  message=FALSE, warning=FALSE, cache = TRUE}
+set.seed(95)
+mod.rf <- randomForest(x = trainX, y = trainY, do.trace = FALSE)
+```
+
+```{r,  message=FALSE, warning=FALSE}
+pred.rf.train <- predict(mod.rf, newdata = trainX)
+pred.rf.test <- predict(mod.rf, newdata = testX)
+
+printMetrics(trainY, testY, pred.rf.train, pred.rf.test)
+```
+
+overfitting
+```{r,  message=FALSE, warning=FALSE, cache = TRUE}
+set.seed(95)
+mod.rf2 <- randomForest(x = trainXS, y = trainYS, do.trace = FALSE)
+
+
+pred.rf.train2 <- predict(mod.rf2, newdata = trainXS)
+pred.rf.test2 <- predict(mod.rf2, newdata = testXS)
+
+printMetrics(trainYS, testYS, pred.rf.train2, pred.rf.test2)
+```
+```{r}
+mod.rf2.2 <- randomForest(x = trainXS, y = trainYS, mtry = 20, nodesize = 3, ntree = 500)
+pred.rf.train2.2 <- predict(mod.rf2.2, newdata = trainXS)
+pred.rf.test2.2 <- predict(mod.rf2.2, newdata = testXS)
+printMetrics(trainYS, testYS, pred.rf.train2.2, pred.rf.test2.2)
+importance(mod.rf2.2) 
+```
+```{r,  message=FALSE, warning=FALSE, cache = TRUE}
+formula2 <- IncidntNum ~ poly(AvgTemp, poly_degree) + poly(Humidity, poly_degree) + poly(Visibility, poly_degree) + poly(WindSpeed, poly_degree)+slot+DayOfWeek+PdDistrict
+
+trainYS2<- train$IncidntNum
+trainXS2 <- model.matrix(formula2, data = train)
+
+testYS2 <- test$IncidntNum
+testXS2 <- model.matrix(formula2, data = test)
+set.seed(95)
+mod.rf3 <- randomForest(x = trainXS2, y = trainYS2, do.trace = FALSE)
+
+
+pred.rf.train3 <- predict(mod.rf3, newdata = trainXS2)
+pred.rf.test3 <- predict(mod.rf3, newdata = testXS2)
+
+printMetrics(trainYS, testYS, pred.rf.train3, pred.rf.test3)
+```
+```{r}
+##takes too long to run
+train$Weekday.Weekend <- NULL
+train.rf <- train( IncidntNum~ .,
+                 data = train,
+                 method = "rf",
+                 tuneGrid = data.frame(mtry=1:19),
+                 trControl = trainControl(method="cv",
+                 number=5, verboseIter = TRUE),
+                 metric = "RMSE")
+```
+
+
+
