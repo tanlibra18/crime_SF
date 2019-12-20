@@ -1,0 +1,89 @@
+---
+title: "v3"
+author: "Junyan Tan"
+date: "12/8/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caTools)
+library(ROCR)
+library(ggplot2)
+library(psych)
+library(car)
+library(dplyr)
+```
+
+```{r}
+v3 <- read.csv("v3.csv")
+v3
+```
+
+```{r}
+v3$pd <- NULL
+v3$date <- NULL
+v3$slot <- as.factor(v3$slot)
+v3$DayOfWeek <- as.factor(v3$DayOfWeek)
+v3$PdDistrict <- NULL
+```
+
+```{r}
+v3
+```
+
+Split the dataset
+```{r}
+set.seed(12345)
+split <- sample.split(v3$IncidntNum, SplitRatio = 0.7)
+v3.train <- subset(v3, split == TRUE)
+v3.test <- subset(v3, split == FALSE)
+```
+
+```{r}
+v3.train
+```
+
+```{r}
+v3.test
+```
+
+```{r}
+model.1 <- lm(IncidntNum ~. , data = v3.train)
+summary(model.1)
+```
+
+```{r}
+model.2 <- lm(IncidntNum ~ DayOfWeek+ slot + AvgTemp + Weekday.Weekend + Flood_Per + Heat_Per + Liq_Per + Haz_Score + Imp_Per + Tree_Per + PM_Conc + Tox_Per + Env_Score, data = v3.train)
+summary(model.2)
+```
+
+```{r}
+vif(model.2)
+```
+
+```{r}
+model.3 <- lm(IncidntNum ~ DayOfWeek+ slot + AvgTemp + Weekday.Weekend + Flood_Per + Heat_Per + Liq_Per + Tree_Per + PM_Conc + Tox_Per, data = v3.train)
+summary(model.3)
+```
+
+```{r}
+preds <- predict(model.3, newdata = v3.test)
+SSE = sum((v3.test$IncidntNum - preds)^2)
+SST = sum((v3.test$IncidntNum - mean(v3.train$IncidntNum))^2)
+OSR2 = 1 - SSE/SST
+OSR2
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
